@@ -1,0 +1,12 @@
+# Veri ve eğitim çıktıları (büyük dosyalar)
+data/
+runs/
+*.pt
+*.onnx
+results/tracked.mp4
+results/tracks.csv
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
