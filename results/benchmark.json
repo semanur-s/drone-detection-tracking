@@ -1,0 +1,17 @@
+[
+  {
+    "format": "PyTorch",
+    "cihaz": "CPU",
+    "ms_goruntu": 117.6,
+    "fps": 8.5
+  },
+  {
+    "format": "ONNX Runtime",
+    "cihaz": "CPU",
+    "ms_goruntu": 99.0,
+    "fps": 10.1
+  },
+  {
+    "onnx_boyut_mb": 10.7
+  }
+]
