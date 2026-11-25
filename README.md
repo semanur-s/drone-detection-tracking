@@ -1,60 +1,67 @@
 # Drone Tespit ve Takibi — YOLO11 + ByteTrack
 
-Gökyüzündeki drone'ları YOLO11 ile tespit eden, ByteTrack ile kareler arasında takip eden ve modeli gömülü cihazlar için ONNX'e çeviren uçtan uca bir sistem. Hava savunma ve İHA karşıtı sistemlerdeki "tespit → takip → gerçek zamanlı çalıştırma" zincirini küçük ölçekte kuruyor.
+YOLO11n ile drone tespiti, ByteTrack ile video üzerinde çoklu nesne takibi ve ONNX ile CPU üzerinde dağıtım. Değerlendirmede standart metriklere ek olarak nesne boyutuna göre recall analizi yapıldı.
 
-> **EN:** End-to-end drone detection and tracking: YOLO11n fine-tuned on the Seraphim Drone Detection Dataset, ByteTrack multi-object tracking on video, size-aware evaluation for tiny objects, and ONNX export with CPU speed benchmarks.
+> **EN:** Drone detection with YOLO11n fine-tuned on the Seraphim Drone Detection Dataset (mAP@0.5 0.889 on 2,000 held-out test images), ByteTrack-based tracking (43 FPS on a T4 with no ID switches on a 450-frame 4K clip), size-aware evaluation and ONNX export with CPU benchmarks.
 
-```
-video karesi ─► YOLO11n (tespit) ─► ByteTrack (ID atama, Kalman tahmini) ─► kutu + ID + iz çizgisi
-                     │
-                     └─► ONNX export ─► CPU / gömülü cihazda hız ölçümü
-```
+<p align="center"><img src="assets/takip.gif" width="270" alt="Takip örneği"></p>
 
 ## Sonuçlar
 
-> Sonuçlar Colab'da [notebook](notebooks/drone_detection_colab.ipynb) çalıştırıldıktan sonra eklenecek.
+**Tespit** — test seti: 2000 görüntü, 2065 drone (eğitimde kullanılmayan ayrı bir veri parçası)
 
-| Metrik | Değer |
+| Precision | Recall | mAP@0.5 | mAP@0.5:0.95 | Çıkarım (T4) |
+|---|---|---|---|---|
+| 0.927 | 0.828 | 0.889 | 0.576 | 3.8 ms/görüntü |
+
+**Boyuta göre recall** (güven eşiği 0.25, IoU ≥ 0.5)
+
+| Küçük (<32 px) | Orta (32–96 px) | Büyük (>96 px) |
+|---|---|---|
+| 0.915 (446 drone) | 0.856 (710) | 0.832 (909) |
+
+**Takip** — 450 karelik 4K video, tek drone
+
+| İz sayısı | Ortalama iz uzunluğu | FPS (T4, tespit + takip) |
+|---|---|---|
+| 1 | 450 kare (ID değişimi yok) | 43.2 |
+
+**CPU hız ölçümü** (100 test görüntüsü, 640×640)
+
+| Format | ms/görüntü | FPS |
+|---|---|---|
+| PyTorch | 117.6 | 8.5 |
+| ONNX Runtime | 99.0 | 10.1 |
+
+ONNX model boyutu: 10.7 MB.
+
+## Bulgular
+
+- **Model en çok büyük drone'larda zorlanıyor.** Recall küçük nesnelerde 0.92, büyük nesnelerde 0.83. Kameraya yakın drone'lar sık sık kadrajdan taşıyor, ayrıca pervane ve gövde detaylarıyla daha çeşitli görünüyor. Uzak drone'lar ise çoğunlukla düz gökyüzü önünde benzer koyu lekeler.
+- **Doğrulama ve test arasında fark var.** Doğrulamada mAP@0.5 ≈ 0.95, testte 0.889. Doğrulama seti eğitimle aynı veri parçasından, test seti ise farklı bir parçadan geliyor. Bu fark, modelin yeni kaynaklardan gelen görüntülere genellemesindeki payı gösteriyor.
+- **Eğitim 50 epoch'ta tam yakınsamadı.** mAP@0.5 0.95 civarında düzleşse de mAP@0.5:0.95 ve recall son epoch'larda hâlâ yükseliyordu. Daha uzun eğitim ve verinin tamamı (75 bin görüntü) ile ek iyileşme bekleniyor.
+- **ONNX Runtime CPU'da ~%16 daha hızlı.** Gömülü cihazlar için INT8 kuantizasyon ve TensorRT bir sonraki adım.
+
+| Eğitim eğrileri | PR eğrisi |
 |---|---|
-| Precision | – |
-| Recall | – |
-| mAP@0.5 | – |
-| mAP@0.5:0.95 | – |
-| Recall: küçük drone'lar (<32 px) | – |
-| Recall: orta (32–96 px) | – |
-| Recall: büyük (>96 px) | – |
-| Takip: CPU'da FPS (PyTorch / ONNX) | – / – |
+| ![](assets/egitim_egrileri.png) | ![](assets/pr_egrisi.png) |
 
-## Nasıl çalışıyor?
+![Test tahminleri](assets/test_tahminleri.png)
 
-### 1. Veri
-[Seraphim Drone Detection Dataset](https://huggingface.co/datasets/lgrzybowski/seraphim-drone-detection-dataset) (CC BY 4.0): 640×640, tek sınıf (drone), YOLO formatında 83 bin görüntü. Tamamı ~9 GB olduğu için `prepare_data.py` sadece ilk birkaç batch'i indirir. Eğitim verisinin %10'u doğrulama için ayrılır. Veri setinin kendi test bölümü eğitimde hiç kullanılmaz.
+## Yöntem
 
-### 2. Tespit: YOLO11n
-- COCO'da önceden eğitilmiş ağırlıklardan başlanır (transfer learning). Model kenar ve şekil gibi genel öznitelikleri zaten biliyor, sadece "drone" sınıfını öğreniyor.
-- YOLO görüntüyü tek seferde ızgaralara bölüp her bölge için kutu ve güven skoru tahmin eder. Bu yüzden gerçek zamanlı çalışabilir. Klasik sliding window + HOG + SVM yaklaşımında ([klasik CV projem](https://github.com/semanur-s/classical-cv-pipeline)) her pencere ayrı ayrı sınıflandırılıyordu.
-- Mozaik veri artırımı kullanılır: 4 görüntü birleştirilerek küçük nesneler farklı bağlamlarda gösterilir.
-
-### 3. Takip: ByteTrack
-Tespit her kareyi bağımsız işler. Takip ise "bu karedeki drone, önceki karedeki hangisi?" sorusunu cevaplar ve her drone'a sabit bir ID verir.
-- **Kalman filtresi:** Her izin bir sonraki karedeki konumunu hız bilgisiyle tahmin eder.
-- **İki aşamalı eşleştirme:** Önce yüksek güvenli tespitler izlerle eşleştirilir. Sonra düşük güvenli tespitler de kalan izlerle eşleştirilir. Küçük ya da bulanık bir drone düşük skor alsa bile izi kopmaz. ByteTrack'i diğer takipçilerden ayıran fikir budur.
-- `configs/bytetrack_drone.yaml` drone'lar için uyarlandı: düşük skor eşiği 0.1 → 0.05 (küçük hedefler), iz tamponu 30 → 60 kare (drone kısa süre kaybolursa aynı ID ile geri döner).
-
-### 4. Değerlendirme
-Standart Precision, Recall ve mAP'e ek olarak `evaluate.py` gerçek drone'ları kutu alanına göre üç gruba ayırıp her grupta ayrı recall hesaplar. Uzaktaki drone'lar birkaç piksel boyutunda olduğu için toplam mAP iyi görünse bile küçük hedeflerde model zayıf kalabilir. Bu analiz o zayıflığı görünür kılar.
-
-### 5. Dağıtım: ONNX
-Model ONNX formatına çevrilir ve CPU'da PyTorch ile ONNX Runtime hızı karşılaştırılır. Raspberry Pi gibi GPU'suz bir cihaza en yakın senaryo budur.
+- **Veri:** [Seraphim Drone Detection Dataset](https://huggingface.co/datasets/lgrzybowski/seraphim-drone-detection-dataset) (CC BY 4.0). Bir eğitim parçasından rastgele 8000 görüntü (%90 eğitim, %10 doğrulama) ve ayrı bir test parçasından 2000 görüntü.
+- **Model:** COCO ön-eğitimli YOLO11n, 640 px, 50 epoch, mozaik veri artırımı (son 10 epoch kapalı).
+- **Takip:** ByteTrack. Düşük güvenli tespitler ikinci aşamada mevcut izlerle eşleştirildiği için kısa süreli düşük skorlarda iz kopmuyor. Ayarlar küçük ve hızlı hedefler için uyarlandı: `track_low_thresh` 0.05, `track_buffer` 60 kare (`configs/bytetrack_drone.yaml`).
+- **Boyuta göre değerlendirme:** Gerçek kutular COCO alan aralıklarına ayrıldı, her biri IoU ≥ 0.5 ile en fazla bir tahminle eşleştirildi.
 
 ## Çalıştırma
 
-**Colab (önerilen):** [`notebooks/drone_detection_colab.ipynb`](notebooks/drone_detection_colab.ipynb) dosyasını Colab'da aç, T4 GPU seç ve hücreleri sırayla çalıştır.
+Colab: [`notebooks/drone_detection_colab.ipynb`](notebooks/drone_detection_colab.ipynb) (T4 GPU)
 
-**Yerel:**
 ```bash
 pip install -r requirements.txt
-python src/prepare_data.py --train-batches 3 --test-batches 1
+python src/prepare_data.py --train-batches 1 --test-batches 1 --max-train 8000
 python src/train.py --data data/drone.yaml --epochs 50 --device 0
 W=$(cat results/best_weights.txt)
 python src/evaluate.py --weights $W --data data/drone.yaml
@@ -62,24 +69,24 @@ python src/track.py --weights $W --source drone_video.mp4
 python src/export_benchmark.py --weights $W --images data/drone/test/images
 ```
 
-## Klasör yapısı
-
 ```
 src/
-├── prepare_data.py      # veri indirme, train/val/test ayırma
-├── train.py             # YOLO11 ince ayar
+├── prepare_data.py      # veri indirme, train/val/test
+├── train.py             # YOLO11 eğitimi
 ├── evaluate.py          # test metrikleri + boyuta göre recall
-├── track.py             # ByteTrack ile video takibi, iz kaydı, FPS
-└── export_benchmark.py  # ONNX export + CPU hız karşılaştırması
+├── track.py             # ByteTrack ile video takibi
+└── export_benchmark.py  # ONNX export + CPU hız ölçümü
 configs/bytetrack_drone.yaml
 notebooks/drone_detection_colab.ipynb
+results/                 # metrik çıktıları (JSON)
 ```
 
 ## Sonraki adımlar
-- Küçük hedefler için daha yüksek çözünürlük (`imgsz=960`) ya da SAHI ile parçalı çıkarım
-- Kuş / uçak gibi drone'a benzeyen negatif örneklerle yanlış alarmları azaltma
-- TensorRT / INT8 kuantizasyon ile Jetson üzerinde ölçüm
+- Tüm veriyle ve daha uzun eğitim, YOLO11s ile karşılaştırma
+- Küçük hedefler için SAHI ile parçalı çıkarım
+- Kuş / uçak gibi benzer nesnelerle yanlış alarm analizi
+- Jetson üzerinde TensorRT / INT8 ölçümü
 
 ## Kaynaklar
-- Veri seti: Seraphim Drone Detection Dataset, CC BY 4.0
+- Seraphim Drone Detection Dataset — CC BY 4.0
 - [Ultralytics YOLO](https://docs.ultralytics.com) · [ByteTrack (Zhang vd., 2022)](https://github.com/ifzhang/ByteTrack)
