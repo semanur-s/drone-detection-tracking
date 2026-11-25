@@ -1,0 +1,10 @@
+ultralytics>=8.3.0
+huggingface_hub>=0.23
+onnx>=1.15
+onnxruntime>=1.17
+opencv-python>=4.8
+numpy
+pandas
+matplotlib
+pyyaml
+lap>=0.5.12
