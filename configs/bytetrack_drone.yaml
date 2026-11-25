@@ -1,0 +1,9 @@
+# ByteTrack ayarları — küçük ve hızlı hareket eden drone'lar için uyarlandı.
+# Varsayılan değerler: ultralytics/cfg/trackers/bytetrack.yaml
+tracker_type: bytetrack
+track_high_thresh: 0.25  # 1. aşama eşleşme eşiği (yüksek güvenli tespitler)
+track_low_thresh: 0.05   # 2. aşama: düşük güvenli tespitler de mevcut izlere eşlenebilir (küçük drone'lar sık sık düşük skor alır)
+new_track_thresh: 0.30   # yeni iz başlatmak için gereken güven; biraz yüksek tutularak sahte izler azaltılır
+track_buffer: 60         # kaybolan izi kaç kare canlı tut (drone kısa süre görünmez olursa aynı ID ile geri döner)
+match_thresh: 0.8        # IoU tabanlı eşleşme eşiği
+fuse_score: True         # eşleşmede tespit skorunu da hesaba kat
