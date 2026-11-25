@@ -3,11 +3,13 @@
 Veri seti: https://huggingface.co/datasets/lgrzybowski/seraphim-drone-detection-dataset
 Lisans: CC BY 4.0 — 83.483 görüntü, tek sınıf (drone), 640x640, YOLO formatında.
 
-Veri seti zip'lenmiş "batch"ler halinde tutuluyor. Tamamı ~9 GB olduğu için Colab'da
-sadece ilk birkaç batch indirilir. Test seti ayrı tutulur, doğrulama seti eğitimden ayrılır.
+Veri seti zip'lenmiş "batch"ler halinde tutuluyor (eğitimde 4 batch, her biri 1.5–2.8 GB).
+Colab'da varsayılan olarak 1 eğitim + 1 test batch'i indirilir ve eğitim süresini makul
+tutmak için eğitim görüntülerinden rastgele bir alt küme seçilir (--max-train).
+Test seti ayrı tutulur, doğrulama seti eğitimden ayrılır.
 
 Kullanım:
-    python src/prepare_data.py --train-batches 3 --test-batches 1 --out data
+    python src/prepare_data.py --train-batches 1 --test-batches 1 --max-train 8000 --out data
 """
 import argparse
 import random
@@ -19,7 +21,7 @@ import yaml
 from huggingface_hub import HfApi, hf_hub_download
 
 REPO_ID = "lgrzybowski/seraphim-drone-detection-dataset"
-IMG_EXT = {".jpg", ".jpeg", ".png"}
+IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def batch_files(api: HfApi, split: str, n: int) -> list[tuple[str, str]]:
@@ -51,8 +53,14 @@ def download_and_extract(pairs, split: str, raw_dir: Path) -> None:
 
 
 def pair_images(split_dir: Path) -> list[Path]:
-    """Etiketi olan görüntüleri döndürür (etiketsiz görüntü = arka plan, yine de dahil edilir)."""
-    return sorted(p for p in (split_dir / "images").iterdir() if p.suffix.lower() in IMG_EXT)
+    """Görüntüleri döndürür (etiketsiz görüntü = arka plan, yine de dahil edilir)."""
+    img_dir = split_dir / "images"
+    files = [p for p in img_dir.iterdir() if p.is_file()] if img_dir.exists() else []
+    images = sorted(p for p in files if p.suffix.lower() in IMG_EXT)
+    if not images:
+        ornek = ", ".join(p.name for p in files[:5]) or "klasör boş"
+        raise RuntimeError(f"{img_dir} içinde görüntü bulunamadı. Örnek dosyalar: {ornek}")
+    return images
 
 
 def copy_split(images: list[Path], src_split: Path, dst_split: Path) -> None:
@@ -67,9 +75,11 @@ def copy_split(images: list[Path], src_split: Path, dst_split: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--train-batches", type=int, default=3)
+    ap.add_argument("--train-batches", type=int, default=1)
     ap.add_argument("--test-batches", type=int, default=1)
     ap.add_argument("--val-ratio", type=float, default=0.1)
+    ap.add_argument("--max-train", type=int, default=8000, help="Eğitim+doğrulama için en fazla kaç görüntü kullanılsın (0 = hepsi)")
+    ap.add_argument("--max-test", type=int, default=2000, help="Test için en fazla kaç görüntü (0 = hepsi)")
     ap.add_argument("--out", type=Path, default=Path("data"))
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -82,18 +92,26 @@ def main() -> None:
     download_and_extract(batch_files(api, "test", args.test_batches), "test", raw)
 
     # Eğitim verisinden doğrulama seti ayır; test seti modele hiç gösterilmez
+    rng = random.Random(args.seed)
     train_imgs = pair_images(raw / "train")
-    random.Random(args.seed).shuffle(train_imgs)
+    rng.shuffle(train_imgs)
+    if args.max_train:
+        train_imgs = train_imgs[: args.max_train]
+    test_imgs = pair_images(raw / "test")
+    rng.shuffle(test_imgs)
+    if args.max_test:
+        test_imgs = test_imgs[: args.max_test]
     n_val = int(len(train_imgs) * args.val_ratio)
     splits = {
         "train": (train_imgs[n_val:], raw / "train"),
         "val": (train_imgs[:n_val], raw / "train"),
-        "test": (pair_images(raw / "test"), raw / "test"),
+        "test": (test_imgs, raw / "test"),
     }
     ds = args.out / "drone"
     for name, (imgs, src) in splits.items():
         copy_split(imgs, src, ds / name)
-        print(f"{name:5s}: {len(imgs)} görüntü")
+        n_lbl = sum(1 for _ in (ds / name / "labels").glob("*.txt"))
+        print(f"{name:5s}: {len(imgs)} görüntü, {n_lbl} etiket dosyası")
 
     data_yaml = {
         "path": str(ds.resolve()),
@@ -105,6 +123,8 @@ def main() -> None:
     with open(args.out / "drone.yaml", "w") as f:
         yaml.safe_dump(data_yaml, f, sort_keys=False)
     print(f"Hazır: {args.out / 'drone.yaml'}")
+    # Zip'lerden çıkan ham dosyalar artık gerekmiyor; Colab diskinde yer aç
+    shutil.rmtree(raw, ignore_errors=True)
 
 
 if __name__ == "__main__":
