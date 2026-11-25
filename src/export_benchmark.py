@@ -1,10 +1,6 @@
-"""Modeli ONNX'e çevirir ve PyTorch ile ONNX Runtime hızını karşılaştırır.
+"""Export the model to ONNX and compare PyTorch vs ONNX Runtime latency on CPU.
 
-Gömülü cihazlarda (Raspberry Pi, Jetson) PyTorch yerine ONNX / TensorRT gibi
-çalışma zamanları kullanılır. Bu betik CPU'da ölçüm yapar; Raspberry Pi gibi
-GPU'suz bir cihaza en yakın senaryo budur.
-
-Kullanım:
+Usage:
     python src/export_benchmark.py --weights $(cat results/best_weights.txt) --images data/drone/test/images
 """
 import argparse
@@ -14,9 +10,11 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
+IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
 
 def bench(model: YOLO, images: list[str], imgsz: int, device: str, warmup: int = 5) -> float:
-    """Görüntü başına ortalama süreyi (ms) döndürür."""
+    """Mean latency per image in ms."""
     for p in images[:warmup]:
         model.predict(p, imgsz=imgsz, device=device, verbose=False)
     t0 = time.perf_counter()
@@ -30,12 +28,12 @@ def main() -> None:
     ap.add_argument("--weights", required=True)
     ap.add_argument("--images", type=Path, required=True)
     ap.add_argument("--imgsz", type=int, default=640)
-    ap.add_argument("--n", type=int, default=100, help="Ölçümde kullanılacak görüntü sayısı")
+    ap.add_argument("--n", type=int, default=100)
     ap.add_argument("--out", type=Path, default=Path("results"))
     args = ap.parse_args()
     args.out.mkdir(exist_ok=True)
 
-    images = sorted(str(p) for p in args.images.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})[: args.n]
+    images = sorted(str(p) for p in args.images.iterdir() if p.suffix.lower() in IMG_EXT)[: args.n]
     pt_model = YOLO(args.weights)
     onnx_path = pt_model.export(format="onnx", imgsz=args.imgsz, simplify=True)
     onnx_model = YOLO(onnx_path, task="detect")

@@ -1,14 +1,9 @@
-"""Seraphim Drone Detection veri setinden bir alt küme indirir ve YOLO formatında hazırlar.
+"""Download a subset of the Seraphim Drone Detection Dataset and prepare it in YOLO format.
 
-Veri seti: https://huggingface.co/datasets/lgrzybowski/seraphim-drone-detection-dataset
-Lisans: CC BY 4.0 — 83.483 görüntü, tek sınıf (drone), 640x640, YOLO formatında.
+Dataset: https://huggingface.co/datasets/lgrzybowski/seraphim-drone-detection-dataset (CC BY 4.0)
+83,483 images, single class (drone), 640x640, distributed as zipped batches.
 
-Veri seti zip'lenmiş "batch"ler halinde tutuluyor (eğitimde 4 batch, her biri 1.5–2.8 GB).
-Colab'da varsayılan olarak 1 eğitim + 1 test batch'i indirilir ve eğitim süresini makul
-tutmak için eğitim görüntülerinden rastgele bir alt küme seçilir (--max-train).
-Test seti ayrı tutulur, doğrulama seti eğitimden ayrılır.
-
-Kullanım:
+Usage:
     python src/prepare_data.py --train-batches 1 --test-batches 1 --max-train 8000 --out data
 """
 import argparse
@@ -25,13 +20,12 @@ IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def batch_files(api: HfApi, split: str, n: int) -> list[tuple[str, str]]:
-    """Bir split için ilk n batch'in (görüntü zip'i, etiket zip'i) yollarını döndürür."""
     files = api.list_repo_files(REPO_ID, repo_type="dataset")
     images = sorted(f for f in files if f.startswith(f"{split}/images/") and f.endswith(".zip"))
     labels = {Path(f).name: f for f in files if f.startswith(f"{split}/labels/") and f.endswith(".zip")}
     pairs = [(img, labels[Path(img).name]) for img in images if Path(img).name in labels]
     if not pairs:
-        raise RuntimeError(f"{split} için batch bulunamadı. Veri setinin yapısı değişmiş olabilir.")
+        raise RuntimeError(f"No batches found for split '{split}'")
     return pairs[:n]
 
 
@@ -45,21 +39,19 @@ def download_and_extract(pairs, split: str, raw_dir: Path) -> None:
                 for member in z.infolist():
                     if member.is_dir():
                         continue
-                    # zip içindeki klasör yapısını düzleştir: sadece dosya adını al
                     name = Path(member.filename).name
                     with z.open(member) as src, open(target / name, "wb") as dst:
                         shutil.copyfileobj(src, dst)
-            print(f"  indirildi: {remote}")
+            print(f"  downloaded: {remote}")
 
 
 def pair_images(split_dir: Path) -> list[Path]:
-    """Görüntüleri döndürür (etiketsiz görüntü = arka plan, yine de dahil edilir)."""
     img_dir = split_dir / "images"
     files = [p for p in img_dir.iterdir() if p.is_file()] if img_dir.exists() else []
     images = sorted(p for p in files if p.suffix.lower() in IMG_EXT)
     if not images:
-        ornek = ", ".join(p.name for p in files[:5]) or "klasör boş"
-        raise RuntimeError(f"{img_dir} içinde görüntü bulunamadı. Örnek dosyalar: {ornek}")
+        sample = ", ".join(p.name for p in files[:5]) or "empty"
+        raise RuntimeError(f"No images found in {img_dir} (files: {sample})")
     return images
 
 
@@ -78,20 +70,20 @@ def main() -> None:
     ap.add_argument("--train-batches", type=int, default=1)
     ap.add_argument("--test-batches", type=int, default=1)
     ap.add_argument("--val-ratio", type=float, default=0.1)
-    ap.add_argument("--max-train", type=int, default=8000, help="Eğitim+doğrulama için en fazla kaç görüntü kullanılsın (0 = hepsi)")
-    ap.add_argument("--max-test", type=int, default=2000, help="Test için en fazla kaç görüntü (0 = hepsi)")
+    ap.add_argument("--max-train", type=int, default=8000, help="max train+val images (0 = all)")
+    ap.add_argument("--max-test", type=int, default=2000, help="max test images (0 = all)")
     ap.add_argument("--out", type=Path, default=Path("data"))
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
     raw = args.out / "raw"
     api = HfApi()
-    print("Train batch'leri indiriliyor...")
+    print("Downloading train batches...")
     download_and_extract(batch_files(api, "train", args.train_batches), "train", raw)
-    print("Test batch'leri indiriliyor...")
+    print("Downloading test batches...")
     download_and_extract(batch_files(api, "test", args.test_batches), "test", raw)
 
-    # Eğitim verisinden doğrulama seti ayır; test seti modele hiç gösterilmez
+    # validation split is carved from train; the test split stays untouched
     rng = random.Random(args.seed)
     train_imgs = pair_images(raw / "train")
     rng.shuffle(train_imgs)
@@ -111,7 +103,7 @@ def main() -> None:
     for name, (imgs, src) in splits.items():
         copy_split(imgs, src, ds / name)
         n_lbl = sum(1 for _ in (ds / name / "labels").glob("*.txt"))
-        print(f"{name:5s}: {len(imgs)} görüntü, {n_lbl} etiket dosyası")
+        print(f"{name:5s}: {len(imgs)} images, {n_lbl} label files")
 
     data_yaml = {
         "path": str(ds.resolve()),
@@ -122,8 +114,7 @@ def main() -> None:
     }
     with open(args.out / "drone.yaml", "w") as f:
         yaml.safe_dump(data_yaml, f, sort_keys=False)
-    print(f"Hazır: {args.out / 'drone.yaml'}")
-    # Zip'lerden çıkan ham dosyalar artık gerekmiyor; Colab diskinde yer aç
+    print(f"Done: {args.out / 'drone.yaml'}")
     shutil.rmtree(raw, ignore_errors=True)
 
 

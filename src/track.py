@@ -1,11 +1,11 @@
-"""Bir videoda drone'ları YOLO ile tespit edip ByteTrack ile takip eder.
+"""Detect and track drones in a video with YOLO + ByteTrack.
 
-Çıktılar:
-- results/tracked.mp4  : kutu, ID ve iz çizgisi çizilmiş video
-- results/tracks.csv   : her karede her izin konumu (kare, id, x1, y1, x2, y2, güven)
-- results/track_stats.json : iz sayısı, ortalama iz uzunluğu, ortalama FPS
+Outputs (in --out):
+    tracked.mp4       annotated video (boxes, IDs, trails)
+    tracks.csv        frame, track_id, x1, y1, x2, y2, conf
+    track_stats.json  number of tracks, mean track length, mean FPS
 
-Kullanım:
+Usage:
     python src/track.py --weights $(cat results/best_weights.txt) --source video.mp4
 """
 import argparse
@@ -22,19 +22,19 @@ from ultralytics import YOLO
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--weights", required=True)
-    ap.add_argument("--source", required=True, help="Video dosyası yolu")
+    ap.add_argument("--source", required=True)
     ap.add_argument("--tracker", default="configs/bytetrack_drone.yaml")
-    ap.add_argument("--conf", type=float, default=0.1, help="Düşük tutulur; düşük skorlu tespitleri ByteTrack değerlendirir")
+    ap.add_argument("--conf", type=float, default=0.1)
     ap.add_argument("--imgsz", type=int, default=640)
     ap.add_argument("--out", type=Path, default=Path("results"))
-    ap.add_argument("--trail", type=int, default=30, help="Çizilecek iz kuyruğu uzunluğu (kare)")
+    ap.add_argument("--trail", type=int, default=30)
     args = ap.parse_args()
     args.out.mkdir(exist_ok=True)
 
     model = YOLO(args.weights)
     cap = cv2.VideoCapture(args.source)
     if not cap.isOpened():
-        raise FileNotFoundError(f"Video açılamadı: {args.source}")
+        raise FileNotFoundError(f"Cannot open video: {args.source}")
     fps_in = cap.get(cv2.CAP_PROP_FPS) or 30
     w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     writer = cv2.VideoWriter(str(args.out / "tracked.mp4"), cv2.VideoWriter_fourcc(*"mp4v"), fps_in, (w, h))
@@ -52,7 +52,6 @@ def main() -> None:
             if not ok:
                 break
             t0 = time.perf_counter()
-            # persist=True: izler kareler arasında korunur
             res = model.track(frame, persist=True, tracker=args.tracker, conf=args.conf, imgsz=args.imgsz, verbose=False)[0]
             times.append(time.perf_counter() - t0)
 
@@ -61,8 +60,7 @@ def main() -> None:
                 for (x1, y1, x2, y2), tid, c in zip(boxes.xyxy.tolist(), boxes.id.int().tolist(), boxes.conf.tolist()):
                     log.writerow([frame_idx, tid, round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1), round(c, 3)])
                     lengths[tid] += 1
-                    center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-                    trails[tid].append(center)
+                    trails[tid].append((int((x1 + x2) / 2), int((y1 + y2) / 2)))
                     cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 200, 255), 2)
                     cv2.putText(frame, f"ID {tid} {c:.2f}", (int(x1), int(y1) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 2)
                     pts = list(trails[tid])
@@ -76,8 +74,7 @@ def main() -> None:
     cap.release()
     writer.release()
 
-    # İlk birkaç kare ısınma olduğu için FPS hesabına katılmaz
-    steady = times[5:] if len(times) > 10 else times
+    steady = times[5:] if len(times) > 10 else times  # skip warm-up frames
     stats = {
         "kare_sayisi": frame_idx,
         "iz_sayisi": len(lengths),

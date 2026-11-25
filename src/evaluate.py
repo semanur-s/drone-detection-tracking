@@ -1,11 +1,9 @@
-"""Eğitilmiş modeli test setinde değerlendirir.
+"""Evaluate a trained model on the test split.
 
-1. Ultralytics'in standart metrikleri: Precision, Recall, mAP@0.5, mAP@0.5:0.95
-2. Nesne boyutuna göre recall: drone'lar genelde çok küçük olduğu için toplam mAP
-   yanıltıcı olabilir. Küçük / orta / büyük kutular için ayrı ayrı bakıyoruz.
-   (COCO tanımı: küçük < 32², orta 32²–96², büyük > 96² piksel alan)
+Reports standard detection metrics (P, R, mAP@0.5, mAP@0.5:0.95) and recall
+per object size (COCO size bins: small < 32², medium 32²–96², large > 96² px).
 
-Kullanım:
+Usage:
     python src/evaluate.py --weights $(cat results/best_weights.txt) --data data/drone.yaml
 """
 import argparse
@@ -17,10 +15,10 @@ import yaml
 from ultralytics import YOLO
 
 SIZE_BUCKETS = {"kucuk (<32px)": (0, 32**2), "orta (32-96px)": (32**2, 96**2), "buyuk (>96px)": (96**2, float("inf"))}
+IMG_EXT = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def iou(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
-    """Bir kutu (x1,y1,x2,y2) ile kutu dizisi arasındaki IoU değerleri."""
     if len(boxes) == 0:
         return np.zeros(0)
     x1 = np.maximum(box[0], boxes[:, 0])
@@ -34,7 +32,7 @@ def iou(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
 
 
 def read_gt(label_path: Path, w: int, h: int) -> np.ndarray:
-    """YOLO etiketini (sınıf cx cy bw bh, normalize) piksel x1y1x2y2'ye çevirir."""
+    """YOLO label (cls cx cy bw bh, normalized) -> pixel xyxy."""
     if not label_path.exists():
         return np.zeros((0, 4))
     rows = [list(map(float, l.split()[1:5])) for l in label_path.read_text().splitlines() if l.strip()]
@@ -46,11 +44,11 @@ def read_gt(label_path: Path, w: int, h: int) -> np.ndarray:
 
 
 def size_recall(model: YOLO, test_images: Path, conf: float, iou_thr: float = 0.5) -> dict:
-    """Her boyut grubunda gerçek drone'ların ne kadarının bulunduğunu hesaplar."""
     found = {k: 0 for k in SIZE_BUCKETS}
     total = {k: 0 for k in SIZE_BUCKETS}
-    images = sorted(p for p in test_images.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
-    for res in model.predict(source=[str(p) for p in images], conf=conf, stream=True, verbose=False):
+    images = sorted(p for p in test_images.iterdir() if p.suffix.lower() in IMG_EXT)
+    # one image at a time: passing a list makes it a single batch and exhausts GPU memory
+    for res in (r for p in images for r in model.predict(str(p), conf=conf, verbose=False)):
         h, w = res.orig_shape
         img_path = Path(res.path)
         gt = read_gt(img_path.parent.parent / "labels" / (img_path.stem + ".txt"), w, h)
@@ -73,7 +71,7 @@ def main() -> None:
     ap.add_argument("--weights", required=True)
     ap.add_argument("--data", default="data/drone.yaml")
     ap.add_argument("--imgsz", type=int, default=640)
-    ap.add_argument("--conf", type=float, default=0.25, help="Boyut analizinde kullanılan güven eşiği")
+    ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--out", type=Path, default=Path("results"))
     args = ap.parse_args()
     args.out.mkdir(exist_ok=True)
@@ -88,8 +86,7 @@ def main() -> None:
     }
 
     cfg = yaml.safe_load(open(args.data))
-    test_images = Path(cfg["path"]) / cfg["test"]
-    metrics["boyuta_gore"] = size_recall(model, test_images, args.conf)
+    metrics["boyuta_gore"] = size_recall(model, Path(cfg["path"]) / cfg["test"], args.conf)
 
     (args.out / "test_metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=False))
     print(json.dumps(metrics, indent=2, ensure_ascii=False))
